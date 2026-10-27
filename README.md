@@ -81,3 +81,20 @@ portal, checks `aud` is its own canonical URL, and reads `scope`, `role` and `su
 
 Long-lived **program tokens** for unattended use (role officer) are issued by an
 administrator at `/admin/tokens`.
+
+## Assistant channel (MCP)
+
+AI assistants can apply and follow up for a citizen, and review the queue for an officer, through two MCP servers
+(streamable HTTP, OAuth 2.1 against this portal). The portal stays the system of record: both servers call the portal's
+internal API, which uses the same `submit_application()` / `validate_application()` as the web form.
+
+| | Applicant | Officer |
+|---|---|---|
+| MCP endpoint | `<PUBLIC_BASE_URL>/citizen/mcp` | `<PUBLIC_BASE_URL>/officer/mcp` |
+| Sign-in | mobile + OTP on the portal | departmental login |
+| Tools | scheme_info, my_applications, save_details, get_age_proof_upload_link, submit_application, withdraw_application, sign_out | list_applications, get_application, decide_application |
+
+Deploy (VM with Docker, ports 80/443 open): `cp .env.example .env`, edit it, `docker compose up --build -d`.
+Claude Code: `claude mcp add --transport http sewasetu-citizen https://<host>/citizen/mcp`, then `/mcp` to sign in.
+Evals: `/eval-dashboard`. Run them: `cd eval && pip install -r requirements.txt && python scripted.py` (no key needed),
+`python run_llm.py` (needs `ANTHROPIC_API_KEY`). Design decisions: `DESIGN.md`.

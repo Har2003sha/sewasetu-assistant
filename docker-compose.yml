@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:15
+    restart: unless-stopped
     environment:
       POSTGRES_DB: sewasetu
       POSTGRES_USER: sewasetu
@@ -9,42 +10,85 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./app/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
       - ./seed/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sewasetu -d sewasetu"]
+      interval: 5s
+      retries: 20
 
   app:
     build: ./app
+    restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"          # local debugging only; the public way in is caddy
     environment:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-before-deploying}
-      # the address at which people reach this portal; stamped into sign-in tokens and
-      # discovery documents, so it must be the public one when deployed
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY (any long random string)}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY (any long random string)}
     depends_on:
-      - db
-      - smsgw
+      db: {condition: service_healthy}
+      smsgw: {condition: service_started}
     volumes:
       - uploads:/var/sewasetu/uploads
       - applogs:/var/log/sewasetu
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      retries: 10
 
   scheduler:
     build: ./app
-    # Run the deemed-approval job once at startup (so a freshly restored
-    # database is brought up to date), then hand over to cron for the nightly run.
+    restart: unless-stopped
     command: ["sh", "-c", "until python /app/scripts/deemed_approval.py; do sleep 5; done; exec cron -f"]
     depends_on:
-      - db
+      db: {condition: service_healthy}
     volumes:
       - applogs:/var/log/sewasetu
 
   smsgw:
     build: ./smsgw
-    # internal only — reached by the app over the docker network and exposed to
-    # users via the app at /__gateway/ (so no second host port is needed)
+    restart: unless-stopped
     expose:
       - "8025"
+
+  # --- the assistant channel: one image, two servers, two endpoints, two token audiences ---
+  mcp-citizen:
+    build: ./mcp
+    restart: unless-stopped
+    command: ["python", "server.py", "citizen"]
+    environment: &mcpenv
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      PORTAL_INTERNAL_URL: http://app:8000
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY}
+    depends_on:
+      app: {condition: service_healthy}
+    expose: ["8101"]
+
+  mcp-officer:
+    build: ./mcp
+    restart: unless-stopped
+    command: ["python", "server.py", "officer"]
+    environment: *mcpenv
+    depends_on:
+      app: {condition: service_healthy}
+    expose: ["8102"]
+
+  caddy:                                # HTTPS (automatic certificates) and routing
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+    depends_on: [app, mcp-citizen, mcp-officer]
 
 volumes:
   pgdata:
   uploads:
   applogs:
+  caddydata:

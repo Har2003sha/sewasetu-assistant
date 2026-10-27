@@ -36,6 +36,8 @@ config.read(os.path.join(BASE_DIR, "config", "app.ini"))
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or config.get("app", "secret_key")
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
+                  SESSION_COOKIE_SECURE=os.environ.get("PUBLIC_BASE_URL", "").startswith("https://"))
 # Two hours: elderly applicants fill the form slowly; the draft lives in the session.
 app.config["PERMANENT_SESSION_LIFETIME"] = 7200
 
@@ -46,7 +48,7 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 # WITHDRAWN and REJECTED applications do not block a fresh application.
 ACTIVE_STATUSES = ("PENDING", "APPROVED", "DEEMED_APPROVED")
 
-SMS_GATEWAY_URL = config.get("app", "sms_gateway_url")
+SMS_GATEWAY_URL = os.environ.get("SMS_GATEWAY_URL") or config.get("app", "sms_gateway_url")
 OTP_VALIDITY_SECONDS = config.getint("app", "otp_validity_seconds")
 UPLOAD_DIR = config.get("app", "upload_dir")
 SCHEME_DEADLINE = datetime.strptime(config.get("pension", "scheme_deadline"),
@@ -70,11 +72,11 @@ except Exception:
 
 def get_db():
     return psycopg2.connect(
-        host=config.get("database", "host"),
-        port=config.get("database", "port"),
+        host=os.environ.get("DB_HOST") or config.get("database", "host"),
+        port=os.environ.get("DB_PORT") or config.get("database", "port"),
         dbname=config.get("database", "name"),
         user=config.get("database", "user"),
-        password=config.get("database", "password"),
+        password=os.environ.get("DB_PASSWORD") or config.get("database", "password"),
     )
 
 
@@ -105,8 +107,16 @@ def deadline_remaining():
     return int(delta.total_seconds() // 3600)
 
 
-def new_application_no():
-    return "SSP" + datetime.now().strftime("%y") + str(random.randint(100000, 999999))
+def new_application_no(cur=None):
+    """SSP + yy + 6 digits. With ~100k rows a bare random number collides about 1 time in 9,
+    so check the table (the unique index idx_app_no is the final guard)."""
+    while True:
+        no = "SSP" + datetime.now().strftime("%y") + str(random.randint(100000, 999999))
+        if cur is None:
+            return no
+        cur.execute("SELECT 1 FROM applications WHERE application_no = %s", (no,))
+        if not cur.fetchone():
+            return no
 
 
 def write_audit(cur, app_id, action, actor, note=""):
@@ -177,6 +187,37 @@ def validate_application(data, doc_path):
     return errors, cleaned
 
 
+class SubmitRefused(Exception):
+    def __init__(self, errors, existing=None):
+        super().__init__("; ".join(errors))
+        self.errors, self.existing = errors, existing
+
+
+def submit_application(mobile, data, doc_path, channel="web form"):
+    """The ONE way an application gets created (web form, AI assistant, any future channel).
+
+    validate -> one-active-application rule -> insert, in one transaction. A per-mobile advisory
+    lock makes the check-then-insert atomic, so two simultaneous submissions (double click, a
+    retrying AI client) cannot both pass. Raises SubmitRefused. Returns (id, application_no).
+    """
+    errors, cleaned = validate_application(data, doc_path)
+    if errors:
+        raise SubmitRefused(errors)
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("submit:" + mobile,))
+        existing = active_application(cur, mobile)
+        if existing:
+            raise SubmitRefused(["application %s (%s) already exists for this mobile number"
+                                 % (existing[1], existing[2])], existing=existing)
+        new_id, app_no = create_application(cur, mobile, cleaned, "submitted via %s" % channel)
+        conn.commit()
+        return new_id, app_no
+    finally:
+        conn.close()
+
+
 def active_application(cur, mobile):
     """The applicant's current live application, if any."""
     cur.execute("SELECT id, application_no, status FROM applications "
@@ -185,12 +226,12 @@ def active_application(cur, mobile):
     return cur.fetchone()
 
 
-def create_application(cur, mobile, cleaned):
+def create_application(cur, mobile, cleaned, note=""):
     """Insert a validated application; ensure the status-portal account exists.
 
     The caller commits. Returns (id, application_no).
     """
-    app_no = new_application_no()
+    app_no = new_application_no(cur)
     cur.execute(
         """INSERT INTO applications
            (application_no, applicant_name, mobile, dob, gender, marital_status,
@@ -210,7 +251,7 @@ def create_application(cur, mobile, cleaned):
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO portal_users (mobile, password_hash) VALUES (%s,%s)",
                     (mobile, hash_password(portal_pass)))
-    write_audit(cur, new_id, "SUBMIT", "applicant:%s" % mobile)
+    write_audit(cur, new_id, "SUBMIT", "applicant:%s" % mobile, note)
     return new_id, app_no
 
 
@@ -348,6 +389,7 @@ def upload():
             flash("File is larger than 5 MB. Please upload a smaller file.")
             return render_template("upload.html")
         os.makedirs(UPLOAD_DIR, exist_ok=True)
+        filename = re.sub(r"[^a-z0-9._-]", "_", filename)      # no path tricks in a client-supplied name
         path = os.path.join(UPLOAD_DIR, "%s_%s" % (session["verified_mobile"], filename))
         with open(path, "wb") as out:
             out.write(content)
@@ -373,24 +415,16 @@ def declaration():
 def handle_submission():
     mobile = session.get("verified_mobile")
     data = session.get("form_data", {})
-    errors, cleaned = validate_application(data, session.get("doc_path", ""))
-    if errors:
-        flash("Please correct the following before submitting: " + "; ".join(errors) + ".")
+    try:
+        new_id, app_no = submit_application(mobile, data, session.get("doc_path", ""), "web form")
+    except SubmitRefused as e:
+        if e.existing:
+            flash("Application %s (%s) already exists for this mobile number. A pending "
+                  "application can be withdrawn from the status portal if you need to "
+                  "apply afresh." % (e.existing[1], e.existing[2]))
+            return redirect(url_for("index"))
+        flash("Please correct the following before submitting: " + "; ".join(e.errors) + ".")
         return redirect(url_for("form_step", step=1))
-
-    conn = get_db()
-    cur = conn.cursor()
-    existing = active_application(cur, mobile)
-    if existing:
-        cur.close(); conn.close()
-        flash("Application %s (%s) already exists for this mobile number. A pending "
-              "application can be withdrawn from the status portal if you need to "
-              "apply afresh." % (existing[1], existing[2]))
-        return redirect(url_for("index"))
-
-    new_id, app_no = create_application(cur, mobile, cleaned)
-    conn.commit()
-    cur.close(); conn.close()
 
     session.pop("form_data", None)
     session.pop("doc_path", None)
@@ -672,6 +706,12 @@ def admin_reject(app_id):
 
 from oauth import oauth as _oauth_blueprint   # noqa: E402  (needs the definitions above)
 app.register_blueprint(_oauth_blueprint)
+from api import api as _api_blueprint, ensure_schema as _ensure_schema   # noqa: E402
+app.register_blueprint(_api_blueprint)
+try:
+    _ensure_schema()
+except Exception as _e:                      # db not up yet: first request will retry
+    app.logger.warning("schema check deferred: %s" % _e)
 
 
 if __name__ == "__main__":

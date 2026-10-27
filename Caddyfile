@@ -1,0 +1,23 @@
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	# service-to-service API: never reachable from outside
+	handle /internal/* {
+		respond "not found" 404
+	}
+	@cit path /citizen/* /.well-known/oauth-protected-resource/citizen/*
+	handle @cit {
+		reverse_proxy mcp-citizen:8101 {
+			flush_interval -1
+		}
+	}
+	@off path /officer/* /.well-known/oauth-protected-resource/officer/*
+	handle @off {
+		reverse_proxy mcp-officer:8102 {
+			flush_interval -1
+		}
+	}
+	handle {
+		reverse_proxy app:8000
+	}
+}
