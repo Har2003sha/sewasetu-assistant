@@ -1,0 +1,7 @@
+myenv/
+__pycache__/
+*.pyc
+data/
+uploads/
+run.ps1
+.env

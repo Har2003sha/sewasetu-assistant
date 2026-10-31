@@ -1,0 +1,12 @@
+**/myenv, **/__pycache__, .git, .env, eval
+# Sensitive runtime and production data
+seed/
+app/data/
+app/uploads/
+app/run.ps1
+
+
+seed/
+app/data/
+app/uploads/
+app/run.ps1

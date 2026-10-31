@@ -1,36 +1,24 @@
-services:
-  db:
-    image: postgres:15
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: sewasetu
-      POSTGRES_USER: sewasetu
-      POSTGRES_PASSWORD: sewasetu123
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./app/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
-      - ./seed/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sewasetu -d sewasetu"]
-      interval: 5s
-      retries: 20
 
+services:
   app:
     build: ./app
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8000:8000"          # local debugging only; the public way in is caddy
+      - "127.0.0.1:8000:8000"
     environment:
+      DB_PATH: /data/sewasetu.db
+      UPLOAD_DIR: /data/uploads
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
-      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY (any long random string)}
-      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY (any long random string)}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY}
+      SMS_PROVIDER: simulator
     depends_on:
-      db: {condition: service_healthy}
-      smsgw: {condition: service_started}
+      smsgw:
+        condition: service_started
     volumes:
-      - uploads:/var/sewasetu/uploads
+      - appdata:/data
       - applogs:/var/log/sewasetu
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz')"]
@@ -40,10 +28,12 @@ services:
   scheduler:
     build: ./app
     restart: unless-stopped
-    command: ["sh", "-c", "until python /app/scripts/deemed_approval.py; do sleep 5; done; exec cron -f"]
+    command: ["python", "/app/scripts/deemed_approval.py"]
     depends_on:
-      db: {condition: service_healthy}
+      app:
+        condition: service_healthy
     volumes:
+      - appdata:/data
       - applogs:/var/log/sewasetu
 
   smsgw:
@@ -52,7 +42,6 @@ services:
     expose:
       - "8025"
 
-  # --- the assistant channel: one image, two servers, two endpoints, two token audiences ---
   mcp-citizen:
     build: ./mcp
     restart: unless-stopped
@@ -62,8 +51,10 @@ services:
       PORTAL_INTERNAL_URL: http://app:8000
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY}
     depends_on:
-      app: {condition: service_healthy}
-    expose: ["8101"]
+      app:
+        condition: service_healthy
+    expose:
+      - "8101"
 
   mcp-officer:
     build: ./mcp
@@ -71,10 +62,12 @@ services:
     command: ["python", "server.py", "officer"]
     environment: *mcpenv
     depends_on:
-      app: {condition: service_healthy}
-    expose: ["8102"]
+      app:
+        condition: service_healthy
+    expose:
+      - "8102"
 
-  caddy:                                # HTTPS (automatic certificates) and routing
+  caddy:
     image: caddy:2
     restart: unless-stopped
     ports:
@@ -85,10 +78,12 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddydata:/data
-    depends_on: [app, mcp-citizen, mcp-officer]
+    depends_on:
+      - app
+      - mcp-citizen
+      - mcp-officer
 
 volumes:
-  pgdata:
-  uploads:
+  appdata:
   applogs:
   caddydata:

@@ -1,0 +1,48 @@
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Python environments
+myenv/
+venv/
+env/
+**/myenv/
+**/venv/
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Logs
+*.log
+
+# Secrets
+*.pem
+*.key
+
+# OS files
+.DS_Store
+Thumbs.db
+# Uploaded citizen documents
+app/uploads/
+
+
+# Local SQLite database and runtime files
+app/data/*.db
+app/data/*.db-*
+
+
+# Sensitive production data
+seed/seed.sql
+app/data/
+app/uploads/
+
+
+app/run.ps1
+seed/seed.sql
+app/data/
+app/uploads/
+
+app/run.ps1

@@ -50,7 +50,7 @@ ACTIVE_STATUSES = ("PENDING", "APPROVED", "DEEMED_APPROVED")
 
 SMS_GATEWAY_URL = os.environ.get("SMS_GATEWAY_URL") or config.get("app", "sms_gateway_url")
 OTP_VALIDITY_SECONDS = config.getint("app", "otp_validity_seconds")
-UPLOAD_DIR = config.get("app", "upload_dir")
+UPLOAD_DIR = os.environ.get("UPLOAD_DIR") or config.get("app", "upload_dir")
 SCHEME_DEADLINE = datetime.strptime(config.get("pension", "scheme_deadline"),
                                     "%Y-%m-%d %H:%M")
 MIN_AGE = config.getint("pension", "min_age")

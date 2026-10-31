@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>{% if link %}One more step, {{ link.name or link.email }}{% else %}Welcome to Sewa Setu{% endif %}</h2>
+{% if link %}
+<p>You are signed in with Google ({{ link.email }}). Your pension application is tied to your mobile number, so please verify it once with an OTP.</p>
+{% else %}
+<p>Please register or sign in to continue. You can use your mobile number or your Google account.</p>
+{% endif %}
+<div style="display:flex;gap:28px;flex-wrap:wrap;margin-top:18px">
+  <div style="flex:1;min-width:280px;border:1px solid #d7dbe0;padding:18px 20px">
+    <h3 style="margin-top:0">{% if link %}Your mobile number{% else %}Register / Sign in with mobile{% endif %}</h3>
+    <form method="post" action="/auth/otp">
+      {% if not link %}<label>Full name <span class="note">(for new users)</span></label><input type="text" name="name" maxlength="100" autocomplete="name">{% endif %}
+      <label>Mobile number</label><input type="text" name="mobile" maxlength="10" inputmode="numeric" autocomplete="tel" required>
+      <label>Security check: {{ captcha_q }} = ?</label><input type="text" name="captcha" maxlength="3" inputmode="numeric" style="max-width:100px" required>
+      <p><button class="btn" type="submit">Send OTP</button></p>
+    </form>
+  </div>
+  {% if not link %}
+  <div style="flex:1;min-width:280px;border:1px solid #d7dbe0;padding:18px 20px">
+    <h3 style="margin-top:0">Continue with Google</h3>
+    {% if google %}
+    <p class="note">Sign in with your Google account. We ask for your name and email only.</p>
+    <a href="/auth/google"><button class="btn" type="button" style="background:#fff;color:#222;border:1px solid #888">Sign in with Google</button></a>
+    {% else %}
+    <p class="note">Google sign-in is not switched on for this server yet. Use your mobile number.</p>
+    <button class="btn" type="button" disabled style="background:#ccc;color:#666;cursor:not-allowed">Sign in with Google</button>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+<p class="note" style="margin-top:18px">Already applied and only want to check your status? <a href="/status">Check Application Status</a></p>
+{% endblock %}

@@ -1,0 +1,23 @@
+# Free single-service deploy on Render (portal only). New > Blueprint > pick this repo.
+# Free plan = no persistent disk: the SQLite file and uploads are recreated from seed.sql on every restart/deploy.
+services:
+  - type: web
+    name: sewasetu
+    runtime: docker
+    dockerfilePath: ./app/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: INTERNAL_API_KEY
+        generateValue: true
+      - key: PUBLIC_BASE_URL
+        sync: false            # e.g. https://sewasetu.onrender.com
+      - key: SMS_PROVIDER
+        value: simulator       # or smshorizon (+ SMSH_* keys)
+      - key: SMS_FALLBACK_CONSOLE
+        value: "1"
